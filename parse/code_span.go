@@ -1,0 +1,131 @@
+package parse
+
+import (
+	"bytes"
+
+	"github.com/pafthang/md/ast"
+	"github.com/pafthang/md/html"
+	"github.com/pafthang/md/lex"
+)
+
+func (t *Tree) parseCodeSpan(block *ast.Node, ctx *InlineContext) (ret *ast.Node) {
+	startPos := ctx.pos
+	n := 0
+	for ; startPos+n < ctx.tokensLen; n++ {
+		if lex.ItemBacktick != ctx.tokens[startPos+n] {
+			break
+		}
+	}
+
+	backticks := ctx.tokens[startPos : startPos+n]
+	if ctx.tokensLen <= startPos+n {
+		ctx.pos += n
+		ret = &ast.Node{Type: ast.NodeText, Tokens: backticks}
+		return
+	}
+	openMarker := &ast.Node{Type: ast.NodeCodeSpanOpenMarker, Tokens: backticks}
+
+	endPos := t.matchCodeSpanEnd(ctx.tokens[startPos+n:], n)
+	if 1 > endPos {
+		ctx.pos += n
+		ret = &ast.Node{Type: ast.NodeText, Tokens: backticks}
+		return
+	}
+	endPos = startPos + endPos + n
+	closeMarker := &ast.Node{Type: ast.NodeCodeSpanCloseMarker, Tokens: ctx.tokens[endPos : endPos+n]}
+
+	textTokens := ctx.tokens[startPos+n : endPos]
+	textTokens = lex.ReplaceAll(textTokens, lex.ItemNewline, lex.ItemSpace)
+	if 2 < len(textTokens) && lex.ItemSpace == textTokens[0] && lex.ItemSpace == textTokens[len(textTokens)-1] && !lex.IsBlankLine(textTokens) {
+		// 如果首尾是空格并且整行不是空行时剔除首尾的一个空格
+		openMarker.Tokens = append(openMarker.Tokens, textTokens[0])
+		closeMarker.Tokens = ctx.tokens[endPos-1 : endPos+n]
+		textTokens = textTokens[1 : len(textTokens)-1]
+	}
+
+	if t.Context.ParseOption.GFMTable {
+		if ast.NodeTableCell == block.Type {
+			// 表格中的代码中带有管道符的处理 https://github.com/pafthang/md/issues/63
+			textTokens = bytes.ReplaceAll(textTokens, []byte("\\|"), []byte("|"))
+		}
+	}
+
+	ret = &ast.Node{Type: ast.NodeCodeSpan, CodeMarkerLen: n}
+	ret.AppendChild(openMarker)
+
+	if t.Context.ParseOption.ProtyleWYSIWYG {
+		// Improve `inline code` markdown editing https://github.com/siyuan-note/siyuan/issues/9978
+		inlineTree := Inline("", textTokens, t.Context.ParseOption)
+		if nil != inlineTree {
+			content := bytes.Buffer{}
+			ast.Walk(inlineTree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
+				if !entering {
+					content.WriteString(n.Marker(entering))
+					if ast.NodeLinkTitle == n.Type {
+						content.WriteByte(lex.ItemDoublequote)
+					} else if ast.NodeTextMark == n.Type {
+						if "kbd" == n.TextMarkType {
+							content.WriteString("</kbd>")
+						} else if "u" == n.TextMarkType {
+							content.WriteString("</u>")
+						}
+					}
+					return ast.WalkContinue
+				}
+
+				content.WriteString(n.Marker(entering))
+
+				if ast.NodeTextMark == n.Type {
+					if "kbd" == n.TextMarkType {
+						content.WriteString("<kbd>")
+					} else if "u" == n.TextMarkType {
+						content.WriteString("<u>")
+					}
+
+					content.WriteString(n.TextMarkTextContent)
+				} else if ast.NodeText == n.Type || ast.NodeLinkText == n.Type || ast.NodeLinkTitle == n.Type || ast.NodeLinkDest == n.Type {
+					if entering {
+						if ast.NodeLinkTitle == n.Type {
+							content.WriteByte(lex.ItemDoublequote)
+						}
+					}
+					content.Write(n.Tokens)
+				} else if ast.NodeLinkSpace == n.Type {
+					content.WriteByte(lex.ItemSpace)
+				} else if ast.NodeBackslashContent == n.Type {
+					content.WriteString("\\")
+					content.Write(n.Tokens)
+				} else if ast.NodeHTMLEntity == n.Type {
+					content.Write(n.Tokens)
+				}
+				return ast.WalkContinue
+			})
+			textTokens = html.UnescapeHTML(content.Bytes())
+		}
+	}
+
+	ret.AppendChild(&ast.Node{Type: ast.NodeCodeSpanContent, Tokens: textTokens})
+	ret.AppendChild(closeMarker)
+	ctx.pos = endPos + n
+	return
+}
+
+func (t *Tree) matchCodeSpanEnd(tokens []byte, num int) (pos int) {
+	length := len(tokens)
+	for pos < length {
+		l := lex.Accept(tokens[pos:], lex.ItemBacktick)
+		if num == l {
+			next := pos + l
+			if length-1 > next && lex.ItemBacktick == tokens[next] {
+				continue
+			}
+			return pos
+		}
+		if 0 < l {
+			pos += l
+		} else {
+			pos++
+		}
+	}
+	return -1
+}

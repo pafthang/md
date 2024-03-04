@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>MD JavaScript endpoint</title>
+</head>
+<body>
+<script src="md.min.js"></script>
+<script>
+  const md = MD.New();
+  const html2MdRenderer = {
+    renderLinkDest: function (node, entering) {
+      if (entering) {
+        console.log('重写 LinkDest 节点', node.__internal_object__.typ, node.TokensStr(), entering);
+        return [node.TokensStr(), MD.WalkContinue]
+      } else {
+        return ["", MD.WalkContinue]
+      }
+    },
+    renderBang: function (node, entering) {
+      if (entering) {
+        console.log('重写 Bang 节点', node.TokensStr(), entering);
+        return ["!", MD.WalkContinue]
+      } else {
+        return ["", MD.WalkContinue]
+      }
+    },
+  };
+  md.SetJSRenderers({
+    "renderers": {
+      "HTML2Md": html2MdRenderer,
+    }
+  });
+
+  function onMarkdown(it) {
+    const result = md.MarkdownStr("", it.value);
+    console.log(result)
+    document.getElementById('output').innerHTML = result;
+
+    console.log(md.HTML2Md(result));
+    console.log(md.RenderJSON(it.value));
+  }
+</script>
+
+<textarea id="input" rows="10" cols="150" oninput="onMarkdown(this)">**MD** - A structured markdown engine.</textarea>
+<div id="output"></div>
+<script>
+  const result = md.MarkdownStr("", document.getElementById('input').value);
+  document.getElementById('output').innerHTML = result;
+</script>
+</body>
+</html>
